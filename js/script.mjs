@@ -2,6 +2,10 @@
 /* eslint-disable max-len */
 /* eslint-disable no-plusplus */
 // A bunch of settings used when converting
+import * as ditheringLib from './dithering.mjs';
+
+import { split } from 'gifken';
+
 const settings = {
   screenWidth: 128,
   screenHeight: 64,
@@ -35,6 +39,47 @@ function bitswap(b) {
 }
 
 const ConversionFunctions = {
+  bw1Value(data, canvasWidth) {
+    let stringFromBytes = '';
+
+    let byteIndex = 7;
+    let number = 0;
+    for (let index = 0; index < data.length; index += 4) {
+      const avg = (data[index] + data[index + 1] + data[index + 2]) / 3;
+      const value = avg > settings.ditheringThreshold ? 'ff' : '00'
+      if (avg > settings.ditheringThreshold) {
+        number += 2 ** byteIndex;
+      }
+      byteIndex--;
+      // if this was the last pixel of a row or the last pixel of the
+      // image, fill up the rest of our byte with zeros so it always contains 8 bits
+      if ((index !== 0 && (((index / 4) + 1) % (canvasWidth)) === 0) || (index === data.length - 4)) {
+        // for(var i=byteIndex;i>-1;i--){
+        // number += Math.pow(2, i);
+        // }
+        byteIndex = -1;
+      }
+
+      if (byteIndex < 0) {
+        let byteSet = bitswap(number).toString(16);
+        if (byteSet.length === 1) { byteSet = `0${byteSet}`; }
+        if (!settings.removeZeroesCommas) {
+          stringFromBytes += `0x${byteSet}, `;
+        } else {
+          stringFromBytes += byteSet;
+        }
+        if (index > 0 && index % (16 * 8) === 0) {
+          if (!settings.removeZeroesCommas) {
+            stringFromBytes += '\n';
+          }
+        }
+        number = 0;
+        byteIndex = 7;
+      }
+    }
+    return stringFromBytes
+  },
+
   // Output the image as a string for horizontally drawing displays
   horizontal1bit(data, canvasWidth) {
     let stringFromBytes = '';
@@ -231,7 +276,7 @@ const ConversionFunctions = {
     return stringFromBytes;
   },
 };
-settings.conversionFunction = ConversionFunctions.horizontal1bit;
+settings.conversionFunction = ConversionFunctions.bw1Value;
 
 // An images collection with helper methods
 function Images() {
@@ -409,10 +454,12 @@ function placeImage(_image) {
   }
   ctx.restore();
 
-  if (settings.conversionFunction === ConversionFunctions.horizontal1bit
+  if (
+    settings.conversionFunction === ConversionFunctions.bw1Value
+    || settings.conversionFunction === ConversionFunctions.horizontal1bit
     || settings.conversionFunction === ConversionFunctions.vertical1bit) {
     // eslint-disable-next-line no-undef
-    dithering(ctx, canvas.width, canvas.height, settings.ditheringThreshold, settings.ditheringMode);
+    ditheringLib.dithering(ctx, canvas.width, canvas.height, settings.ditheringThreshold, settings.ditheringMode);
     if (settings.invertColors) {
       invert(canvas, ctx);
     }
@@ -464,20 +511,20 @@ function updateAllImages() {
     placeImage(image);
   });
 }
-
+window.updateAllImages = updateAllImages
 // Easy way to update settings controlled by a textfield
 function updateInteger(fieldName) {
   settings[fieldName] = parseInt(document.getElementById(fieldName).value);
   updateAllImages();
 }
-
+window.updateInteger = updateInteger
 // Easy way to update settings controlled by a checkbox
 // eslint-disable-next-line no-unused-vars
 function updateBoolean(fieldName) {
   settings[fieldName] = document.getElementById(fieldName).checked;
   updateAllImages();
 }
-
+window.updateBoolean = updateBoolean
 // Convert hex to binary
 function hexToBinary(s) {
   let i;
@@ -692,7 +739,7 @@ function handleTextInput(drawMode) {
     listToImageVertical(list, canvas);
   }
 }
-
+window.handleTextInput = handleTextInput
 // eslint-disable-next-line no-unused-vars
 function allSameSize() {
   if (images.length() > 1) {
@@ -710,11 +757,49 @@ function allSameSize() {
     }
   }
 }
-
+window.allSameSize = allSameSize
 // Handle selecting an image with the file picker
-function handleImageSelection(evt) {
-  const files = Array.from(evt.target.files);
+async function handleImageSelection(evt) {
+
+  let files = Array.from(evt.target.files);
   files.sort((a, b) => a.name > b.name);
+
+  if (files[0].name.endsWith(".gif")) {
+    files = await new Promise((resolve) => {
+      const gifReader = new FileReader();
+      gifReader.onload = async (file) => {
+        const results = await split(new Uint8Array(file.target.result))
+        const resultImages = []
+        let ix = 0
+        for (const result of results) {
+          const img = new Image()
+          //const imgBlob = new Blob([result], { type: 'image/gif' })
+
+          /* const imageBlob = await new Promise((imageLoadResolve) => {
+            img.onload = () => {
+              let canvas = document.createElement('canvas')
+              const ctx = canvas.getContext('2d')
+              canvas.height = img.height;
+              canvas.width = img.width;
+              ctx.drawImage(img, 0, 0);
+              canvas.toBlob((b) => imageLoadResolve(b), "image/webp", 75);
+            }
+            img.src = URL.createObjectURL(imgBlob)
+          }) */
+
+          //img.src = URL.createObjectURL(imgBlob)
+          //document.body.append(img)
+          console.log("frame!")
+          resultImages.push(new File([result], ix + ".gif", { type: 'image/gif' }))
+          ix++
+          //if (ix > 50) { break }
+        }
+        resolve(resultImages)
+      }
+      gifReader.name = files[0].name;
+      gifReader.readAsArrayBuffer(files[0]);
+    })
+  }
   // error message
   const onlyImagesFileError = document.getElementById('only-images-file-error');
 
@@ -734,6 +819,8 @@ function handleImageSelection(evt) {
     });
   }
 
+  const finalPromiseArray = []
+
   for (let i = 0; files[i]; i++) {
     // Only process image files.
     if (!files[i].type.match('image.*')) {
@@ -741,136 +828,145 @@ function handleImageSelection(evt) {
       // eslint-disable-next-line no-continue
       continue;
     }
+    /* const response = await fetch(files[i])
+    const buffer = await response.arrayBuffer() */
+
 
     const reader = new FileReader();
+    finalPromiseArray.push(new Promise((resolve) => {
+      reader.onload = async (file) => {
+        // eslint-disable-next-line no-param-reassign
+        file.name = reader.name;
+        // Render thumbnail.
+        const img = new Image();
 
-    reader.onload = (file) => {
-      // eslint-disable-next-line no-param-reassign
-      file.name = reader.name;
-      // Render thumbnail.
-      const img = new Image();
+        img.onload = async () => {
 
-      img.onload = () => {
-        const fileInputColumnEntry = document.createElement('div');
-        fileInputColumnEntry.className = 'file-input-entry';
+          const fileInputColumnEntry = document.createElement('div');
+          fileInputColumnEntry.className = 'file-input-entry';
 
-        const fileInputColumnEntryLabel = document.createElement('span');
-        fileInputColumnEntryLabel.textContent = file.name;
+          const fileInputColumnEntryLabel = document.createElement('span');
+          fileInputColumnEntryLabel.textContent = file.name;
 
-        const fileInputColumnEntryRemoveButton = document.createElement('button');
-        fileInputColumnEntryRemoveButton.className = 'remove-button';
-        fileInputColumnEntryRemoveButton.innerHTML = 'remove';
+          const fileInputColumnEntryRemoveButton = document.createElement('button');
+          fileInputColumnEntryRemoveButton.className = 'remove-button';
+          fileInputColumnEntryRemoveButton.innerHTML = 'remove';
 
-        const canvas = document.createElement('canvas');
+          const canvas = document.createElement('canvas');
 
-        const imageEntry = document.createElement('li');
-        imageEntry.setAttribute('data-img', file.name);
+          const imageEntry = document.createElement('li');
+          imageEntry.setAttribute('data-img', file.name);
 
-        const w = document.createElement('input');
-        w.type = 'number';
-        w.name = 'width';
-        w.id = 'screenWidth';
-        w.min = 0;
-        w.className = 'size-input';
-        w.value = img.width;
-        settings.screenWidth = img.width;
-        w.oninput = () => {
-          canvas.width = this.value;
-          updateAllImages();
-          updateInteger('screenWidth');
+          const w = document.createElement('input');
+          w.type = 'number';
+          w.name = 'width';
+          w.id = 'screenWidth';
+          w.min = 0;
+          w.className = 'size-input';
+          w.value = img.width;
+          settings.screenWidth = img.width;
+          w.oninput = () => {
+            canvas.width = this.value;
+            updateAllImages();
+            updateInteger('screenWidth');
+          };
+
+          const h = document.createElement('input');
+          h.type = 'number';
+          h.name = 'height';
+          h.id = 'screenHeight';
+          h.min = 0;
+          h.className = 'size-input';
+          h.value = img.height;
+          settings.screenHeight = img.height;
+          h.oninput = () => {
+            canvas.height = this.value;
+            updateAllImages();
+            updateInteger('screenHeight');
+          };
+
+          const gil = document.createElement('span');
+          gil.innerHTML = 'glyph';
+          gil.className = 'file-info';
+
+          const gi = document.createElement('input');
+          gi.type = 'text';
+          gi.name = 'glyph';
+          gi.className = 'glyph-input';
+          gi.onchange = () => {
+            const image = images.get(img);
+            image.glyph = gi.value;
+          };
+
+          const fn = document.createElement('span');
+          fn.className = 'file-info';
+          fn.innerHTML = `${file.name} (file resolution: ${img.width} x ${img.height})`;
+          fn.innerHTML += '<br />';
+
+          const rb = document.createElement('button');
+          rb.className = 'remove-button';
+          rb.innerHTML = 'remove';
+
+          const fileInputColumn = document.getElementById('file-input-column');
+          const imageSizeSettings = document.getElementById('image-size-settings');
+          const canvasContainer = document.getElementById('images-canvas-container');
+
+          const removeButtonOnClick = () => {
+            const image = images.get(img);
+            canvasContainer.removeChild(image.canvas);
+            images.remove(image);
+            imageSizeSettings.removeChild(imageEntry);
+
+            fileInputColumn.removeChild(fileInputColumnEntry);
+            if (imageSizeSettings.children.length <= 1) {
+              document.getElementById('all-same-size').style.display = 'none';
+            }
+            if (images.length() === 0) {
+              noFileSelected.forEach((el) => {
+                // eslint-disable-next-line no-param-reassign
+                el.style.display = 'block';
+              });
+            }
+            updateAllImages();
+          };
+
+          rb.onclick = removeButtonOnClick;
+          fileInputColumnEntryRemoveButton.onclick = removeButtonOnClick;
+
+          fileInputColumnEntry.appendChild(fileInputColumnEntryLabel);
+          fileInputColumnEntry.appendChild(fileInputColumnEntryRemoveButton);
+          fileInputColumn.appendChild(fileInputColumnEntry);
+
+          imageEntry.appendChild(fn);
+          imageEntry.appendChild(w);
+          imageEntry.appendChild(document.createTextNode(' x '));
+          imageEntry.appendChild(h);
+          imageEntry.appendChild(gil);
+          imageEntry.appendChild(gi);
+          imageEntry.appendChild(rb);
+
+          imageSizeSettings.appendChild(imageEntry);
+
+          canvas.width = img.width;
+          canvas.height = img.height;
+          canvasContainer.appendChild(canvas);
+
+          resolve(() => {
+            images.push(img, canvas, file.name.split('.')[0]);
+            if (images.length() > 1) {
+              document.getElementById('all-same-size').style.display = 'block';
+            }
+            placeImage(images.last());
+          })
         };
-
-        const h = document.createElement('input');
-        h.type = 'number';
-        h.name = 'height';
-        h.id = 'screenHeight';
-        h.min = 0;
-        h.className = 'size-input';
-        h.value = img.height;
-        settings.screenHeight = img.height;
-        h.oninput = () => {
-          canvas.height = this.value;
-          updateAllImages();
-          updateInteger('screenHeight');
-        };
-
-        const gil = document.createElement('span');
-        gil.innerHTML = 'glyph';
-        gil.className = 'file-info';
-
-        const gi = document.createElement('input');
-        gi.type = 'text';
-        gi.name = 'glyph';
-        gi.className = 'glyph-input';
-        gi.onchange = () => {
-          const image = images.get(img);
-          image.glyph = gi.value;
-        };
-
-        const fn = document.createElement('span');
-        fn.className = 'file-info';
-        fn.innerHTML = `${file.name} (file resolution: ${img.width} x ${img.height})`;
-        fn.innerHTML += '<br />';
-
-        const rb = document.createElement('button');
-        rb.className = 'remove-button';
-        rb.innerHTML = 'remove';
-
-        const fileInputColumn = document.getElementById('file-input-column');
-        const imageSizeSettings = document.getElementById('image-size-settings');
-        const canvasContainer = document.getElementById('images-canvas-container');
-
-        const removeButtonOnClick = () => {
-          const image = images.get(img);
-          canvasContainer.removeChild(image.canvas);
-          images.remove(image);
-          imageSizeSettings.removeChild(imageEntry);
-
-          fileInputColumn.removeChild(fileInputColumnEntry);
-          if (imageSizeSettings.children.length <= 1) {
-            document.getElementById('all-same-size').style.display = 'none';
-          }
-          if (images.length() === 0) {
-            noFileSelected.forEach((el) => {
-              // eslint-disable-next-line no-param-reassign
-              el.style.display = 'block';
-            });
-          }
-          updateAllImages();
-        };
-
-        rb.onclick = removeButtonOnClick;
-        fileInputColumnEntryRemoveButton.onclick = removeButtonOnClick;
-
-        fileInputColumnEntry.appendChild(fileInputColumnEntryLabel);
-        fileInputColumnEntry.appendChild(fileInputColumnEntryRemoveButton);
-        fileInputColumn.appendChild(fileInputColumnEntry);
-
-        imageEntry.appendChild(fn);
-        imageEntry.appendChild(w);
-        imageEntry.appendChild(document.createTextNode(' x '));
-        imageEntry.appendChild(h);
-        imageEntry.appendChild(gil);
-        imageEntry.appendChild(gi);
-        imageEntry.appendChild(rb);
-
-        imageSizeSettings.appendChild(imageEntry);
-
-        canvas.width = img.width;
-        canvas.height = img.height;
-        canvasContainer.appendChild(canvas);
-
-        images.push(img, canvas, file.name.split('.')[0]);
-        if (images.length() > 1) {
-          document.getElementById('all-same-size').style.display = 'block';
-        }
-        placeImage(images.last());
+        img.src = file.target.result;
       };
-      img.src = file.target.result;
-    };
+    }));
     reader.name = files[i].name;
     reader.readAsDataURL(files[i]);
   }
+  const synchronousFinalTasks = await Promise.all(finalPromiseArray);
+  synchronousFinalTasks.forEach((callback) => callback())
 }
 
 function imageToString(image) {
@@ -935,10 +1031,9 @@ function generateOutputString() {
 
       outputString = outputString.replace(/,\s*$/, '');
 
-      outputString = `const ${getImageType()} ${
-        +getIdentifier()
-      } [] PROGMEM = {`
-            + `\n${outputString}\n};`;
+      outputString = `const ${getImageType()} ${+getIdentifier()
+        } [] PROGMEM = {`
+        + `\n${outputString}\n};`;
       break;
     }
 
@@ -956,14 +1051,12 @@ function generateOutputString() {
       });
 
       outputString = outputString.replace(/,\s*$/, '');
-      outputString = `const unsigned char ${
-        getIdentifier()
-      }Bitmap`
-            + ' [] PROGMEM = {'
-            + `\n${outputString}\n};\n\n`
-            + `const GFXbitmapGlyph ${
-              getIdentifier()
-            }Glyphs [] PROGMEM = {\n`;
+      outputString = `const unsigned char ${getIdentifier()
+        }Bitmap`
+        + ' [] PROGMEM = {'
+        + `\n${outputString}\n};\n\n`
+        + `const GFXbitmapGlyph ${getIdentifier()
+        }Glyphs [] PROGMEM = {\n`;
 
       let firstAschiiChar = document.getElementById('first-ascii-char').value;
       const xAdvance = parseInt(document.getElementById('x-advance').value);
@@ -972,15 +1065,11 @@ function generateOutputString() {
 
       // GFXbitmapGlyph
       images.each((image) => {
-        code += `\t{ ${
-          offset}, ${
-          image.canvas.width}, ${
-          image.canvas.height}, ${
-          xAdvance}, `
-              + `'${images.length() === useGlyphs
-                ? image.glyph
-                : String.fromCharCode(firstAschiiChar++)}'`
-              + ' }';
+        code += `\t{ ${offset}, ${image.canvas.width}, ${image.canvas.height}, ${xAdvance}, `
+          + `'${images.length() === useGlyphs
+            ? image.glyph
+            : String.fromCharCode(firstAschiiChar++)}'`
+          + ' }';
         if (image !== images.last()) {
           code += ',';
         }
@@ -991,16 +1080,13 @@ function generateOutputString() {
       outputString += code;
 
       // GFXbitmapFont
-      outputString += `\nconst GFXbitmapFont ${
-        getIdentifier()
-      }Font PROGMEM = {\n`
-            + `\t(uint8_t *)${
-              getIdentifier()}Bitmap,\n`
-            + `\t(GFXbitmapGlyph *)${
-              getIdentifier()
-            }Glyphs,\n`
-            + `\t${images.length()
-            }\n};\n`;
+      outputString += `\nconst GFXbitmapFont ${getIdentifier()
+        }Font PROGMEM = {\n`
+        + `\t(uint8_t *)${getIdentifier()}Bitmap,\n`
+        + `\t(GFXbitmapGlyph *)${getIdentifier()
+        }Glyphs,\n`
+        + `\t${images.length()
+        }\n};\n`;
       break;
     }
     default: { // plain
@@ -1024,13 +1110,13 @@ function generateOutputString() {
   document.getElementById('code-output').value = outputString;
   document.getElementById('copy-button').disabled = false;
 }
-
+window.generateOutputString = generateOutputString
 // Copy the final output to the clipboard
 // eslint-disable-next-line no-unused-vars
 function copyOutput() {
   navigator.clipboard.writeText(document.getElementById('code-output').value);
 }
-
+window.copyOutput = copyOutput
 // eslint-disable-next-line no-unused-vars
 function downloadBinFile() {
   let raw = [];
@@ -1053,7 +1139,7 @@ function downloadBinFile() {
   a.click();
   window.URL.revokeObjectURL(url);
 }
-
+window.downloadBinFile = downloadBinFile
 // eslint-disable-next-line no-unused-vars
 function updateDrawMode(elm) {
   const conversionFunction = ConversionFunctions[elm.value];
@@ -1061,6 +1147,7 @@ function updateDrawMode(elm) {
     settings.conversionFunction = conversionFunction;
   }
 }
+window.updateDrawMode = updateDrawMode
 
 // Updates Arduino code check-box
 // eslint-disable-next-line no-unused-vars
@@ -1094,6 +1181,7 @@ function updateOutputFormat(elm) {
 
   settings.outputFormat = elm.value;
 }
+window.updateOutputFormat = updateOutputFormat
 
 // Easy way to update settings controlled by a radiobutton
 // eslint-disable-next-line no-unused-vars
@@ -1106,14 +1194,15 @@ function updateRadio(fieldName) {
   }
   updateAllImages();
 }
+window.updateRadio = updateRadio
 
 window.onload = () => {
   document.getElementById('copy-button').disabled = true;
 
   // Add events to the file input button
   const fileInput = document.getElementById('file-input');
-  fileInput.addEventListener('click', () => { this.value = null; }, false);
-  fileInput.addEventListener('change', handleImageSelection, false);
+  //fileInput.addEventListener('click', () => { this.value = null; }, false);
+  fileInput.addEventListener('change', (e) => handleImageSelection(e), false);
   document.getElementById('outputFormat').value = 'arduino';
   document.getElementById('outputFormat').onchange();
 };

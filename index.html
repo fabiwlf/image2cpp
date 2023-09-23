@@ -11,8 +11,8 @@
 <head>
   <meta charset="UTF-8">
   <title>image2cpp</title>
-  <script src="./js/dithering.js" defer></script>
-  <script src="./js/script.js" defer></script>
+  <!-- unminified -->
+  <script src="./js/bundle.mjs" defer type="module"></script>
   <link rel="stylesheet" href="./css/style.css">
 </head>
 <body>
@@ -241,6 +241,7 @@
             <div class="table-cell"><label>Draw mode:</label></div>
             <div class="table-cell">
               <select id="drawMode" name="drawMode" onchange="updateDrawMode(this)">
+                <option value="bw1Value">BW / 1 or 0 binary</option>
                 <option value="horizontal1bit">Horizontal - 1 bit per pixel</option>
                 <option value="vertical1bit">Vertical - 1 bit per pixel</option>
                 <option value="horizontal565">Horizontal - 2 bytes per pixel (565)</option>
